@@ -1,0 +1,103 @@
+name: Wellness Tourism MLOps Pipeline
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "tourism_project/**"
+      - ".github/workflows/pipeline.yml"
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * 1"      # every Monday 03:00 UTC
+
+concurrency:
+  group: tourism-pipeline
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.11"
+  HF_USER: shrimathin
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: tourism_project/requirements.txt
+      - run: pip install -r tourism_project/requirements.txt
+      - name: Unit tests
+        run: pytest -q tourism_project/tests
+
+  register-dataset:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: tourism_project/requirements.txt
+      - run: pip install -r tourism_project/requirements.txt
+      - name: Upload raw data to the Hugging Face dataset repo
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python tourism_project/model_building/data_register.py
+
+  data-prep:
+    needs: register-dataset
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: tourism_project/requirements.txt
+      - run: pip install -r tourism_project/requirements.txt
+      - name: Clean data and publish train/test splits
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python tourism_project/model_building/prep.py
+
+  model-training:
+    needs: data-prep
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: tourism_project/requirements.txt
+      - run: pip install -r tourism_project/requirements.txt
+      - name: Train, tune, evaluate, gate, and register the model
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python tourism_project/model_building/train.py
+      - name: Keep MLflow tracking DB and model bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlflow-and-model-${{ github.run_number }}
+          path: tourism_project/artifacts/
+
+  deploy-hosting:
+    needs: model-training
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: tourism_project/requirements.txt
+      - run: pip install -r tourism_project/requirements.txt
+      - name: Push Streamlit app to the Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python tourism_project/hosting/hosting.py
